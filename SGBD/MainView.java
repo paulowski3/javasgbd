@@ -148,14 +148,14 @@ public class MainView extends JFrame implements OrderCompletedListener {
 
     private void generateRandomBouquet() {
         try (Connection conn = DBConnection.getConnection()) {
-            // Reset toate spinnerele la 0
             flowerSpinners.values().forEach(spinner -> spinner.setValue(0));
 
             String sql = "SELECT * FROM get_random_bouquet(?, ?, ?)";
             try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-                stmt.setInt(1, 1);             // min_flowers
-                stmt.setInt(2, 5);             // max_flowers
-                stmt.setBigDecimal(3, new BigDecimal("1000.00")); // max_price
+                stmt.setInt(1, 1);
+                stmt.setInt(2, 5);
+                stmt.setBigDecimal(3, new BigDecimal("1000.00"));
+                stmt.setInt(3, 500);
 
                 ResultSet rs = stmt.executeQuery();
 

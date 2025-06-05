@@ -114,10 +114,10 @@ public class DetailsView extends JFrame {
             try {
                 // Inserăm detaliile de livrare
                 String insertDeliverySQL = """
-                    INSERT INTO delivery_details (user_id, name, phone, address, notes)
-                    VALUES (?, ?, ?, ?, ?)
-                    RETURNING id
-                """;
+                INSERT INTO delivery_details (user_id, name, phone, address, notes)
+                VALUES (?, ?, ?, ?, ?)
+                RETURNING id
+            """;
 
                 PreparedStatement deliveryStmt = conn.prepareStatement(insertDeliverySQL);
                 deliveryStmt.setInt(1, userId);
@@ -134,10 +134,10 @@ public class DetailsView extends JFrame {
 
                 // Creăm buchetul
                 String insertBouquetSQL = """
-                    INSERT INTO bouquets (user_id, delivery_id, created_at)
-                    VALUES (?, ?, CURRENT_TIMESTAMP)
-                    RETURNING id
-                """;
+                INSERT INTO bouquets (user_id, delivery_id, created_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                RETURNING id
+            """;
 
                 PreparedStatement bouquetStmt = conn.prepareStatement(insertBouquetSQL);
                 bouquetStmt.setInt(1, userId);
@@ -186,13 +186,81 @@ public class DetailsView extends JFrame {
                 if (orderCompletedListener != null) {
                     orderCompletedListener.onOrderCompleted();
                 }
+                Order orderData = new Order(
+                        bouquetId,
+                        userId,
+                        totalPrice,
+                        nameField.getText().trim(),
+                        phoneField.getText().trim(),
+                        addressField.getText().trim(),
+                        notesArea.getText().trim(),
+                        selectedFlowers,
+                        java.time.LocalDateTime.now().toString()
+                );
+
+                OrderService orderService = new OrderService();
+                boolean sentToExternalServer = orderService.sendOrderToExternalServer(orderData);
+
+                conn.commit();
+
+                if (sentToExternalServer) {
+                    JOptionPane.showMessageDialog(this,
+                            "Comanda a fost plasată cu succes și trimisă către serverul extern!",
+                            "Succes",
+                            JOptionPane.INFORMATION_MESSAGE);
+                } else {
+                    JOptionPane.showMessageDialog(this,
+                            "Comanda a fost plasată local cu succes, dar nu a putut fi trimisă către serverul extern.",
+                            "Atenție",
+                            JOptionPane.WARNING_MESSAGE);
+                }
+
+                if (orderCompletedListener != null) {
+                    orderCompletedListener.onOrderCompleted();
+                }
 
                 dispose();
 
             } catch (SQLException e) {
                 conn.rollback();
+
+                String message = e.getMessage();
+                String errorMessage;
+
+                if (message.contains("PRICE_LIMIT_EXCEEDED")) {
+                    try {
+                        String[] parts = message.split(":");
+                        if (parts.length > 1) {
+                            double price = Double.parseDouble(parts[1].trim());
+                            errorMessage = String.format("Prețul total al buchetului (%.2f RON) nu poate depăși 500 RON!",
+                                    price);
+                        } else {
+                            errorMessage = "Prețul total al buchetului nu poate depăși 500 RON!";
+                        }
+                    } catch (NumberFormatException ex) {
+                        errorMessage = "Prețul total al buchetului nu poate depăși 500 RON!";
+                    }
+                }
+                else if (message.contains("FLOWER_LIMIT_EXCEEDED")) {
+                    try {
+                        String[] parts = message.split(":");
+                        if (parts.length > 1) {
+                            int count = Integer.parseInt(parts[1].trim());
+                            errorMessage = String.format("Un buchet nu poate conține mai mult de 3 tipuri de flori diferite! " +
+                                    "(Ați selectat %d tipuri)", count);
+                        } else {
+                            errorMessage = "Un buchet nu poate conține mai mult de 3 tipuri de flori diferite!";
+                        }
+                    } catch (NumberFormatException ex) {
+                        errorMessage = "Un buchet nu poate conține mai mult de 3 tipuri de flori diferite!";
+                    }
+                }
+                else {
+                    errorMessage = "Eroare la plasarea comenzii: " + message;
+                }
+
                 JOptionPane.showMessageDialog(this,
-                        "Eroare la plasarea comenzii: " + e.getMessage(),
+                        errorMessage,
                         "Eroare",
                         JOptionPane.ERROR_MESSAGE);
             }
