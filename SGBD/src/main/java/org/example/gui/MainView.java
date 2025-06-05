@@ -5,6 +5,7 @@ import org.example.db.DBConnection;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.math.BigDecimal;
 import java.sql.*;
 import java.util.*;
 
@@ -19,6 +20,7 @@ public class MainView extends JFrame {
 
     // Folosim o mapă ca să reținem floarea și câmpul cu cantitate
     private Map<Integer, JTextField> quantityFields = new HashMap<>();
+    private JButton randomBouquetButton;
 
     public MainView(int userId, String username) {
         this.userId = userId;
@@ -56,6 +58,10 @@ public class MainView extends JFrame {
 
         orderButton.addActionListener(e -> placeOrder());
         popularBouquetsButton.addActionListener(e -> showPopularBouquets());
+        randomBouquetButton = new JButton("Generează buchet random");
+        bottomPanel.add(randomBouquetButton);
+
+        randomBouquetButton.addActionListener(e -> generateRandomBouquet());
     }
 
     private void loadFlowers() {
@@ -91,52 +97,164 @@ public class MainView extends JFrame {
         flowerPanel.repaint();
     }
 
-    private void placeOrder() {
+    private void generateRandomBouquet() {
         try (Connection conn = DBConnection.getConnection()) {
-            conn.setAutoCommit(false);
-
-            // Creează buchet nou
-            String insertBouquet = "INSERT INTO bouquets (user_id) VALUES (?)";
-            PreparedStatement bouquetStmt = conn.prepareStatement(insertBouquet, Statement.RETURN_GENERATED_KEYS);
-            bouquetStmt.setInt(1, userId);
-            bouquetStmt.executeUpdate();
-
-            ResultSet generatedKeys = bouquetStmt.getGeneratedKeys();
-            if (generatedKeys.next()) {
-                int bouquetId = generatedKeys.getInt(1);
-
-                String insertFlower = "INSERT INTO bouquet_flowers (bouquet_id, flower_id, quantity) VALUES (?, ?, ?)";
-                PreparedStatement flowerStmt = conn.prepareStatement(insertFlower);
-
-                boolean hasSelection = false;
-
-                for (Map.Entry<Integer, JTextField> entry : quantityFields.entrySet()) {
-                    int flowerId = entry.getKey();
-                    int qty = Integer.parseInt(entry.getValue().getText());
-
-                    if (qty > 0) {
-                        flowerStmt.setInt(1, bouquetId);
-                        flowerStmt.setInt(2, flowerId);
-                        flowerStmt.setInt(3, qty);
-                        flowerStmt.addBatch();
-                        hasSelection = true;
-                    }
-                }
-
-                if (!hasSelection) {
-                    JOptionPane.showMessageDialog(this, "Selectează cel puțin o floare.");
-                    conn.rollback();
-                    return;
-                }
-
-                flowerStmt.executeBatch();
-                conn.commit();
-                JOptionPane.showMessageDialog(this, "Buchetul a fost comandat cu succes!");
+            // Reset toate câmpurile la 0
+            for (JTextField field : quantityFields.values()) {
+                field.setText("0");
+                field.setBackground(Color.WHITE);
             }
 
-        } catch (Exception ex) {
+            // Apelăm procedura stocată
+            String sql = "CALL generate_random_bouquet(?, ?, ?, ?, ?)";
+            CallableStatement stmt = conn.prepareCall(sql);
+
+            // Setăm toți parametrii
+            stmt.setInt(1, userId);                    // p_user_id
+            stmt.setInt(2, 3);                         // p_min_flowers
+            stmt.setInt(3, 7);                         // p_max_flowers
+            stmt.setBigDecimal(4, new BigDecimal("200.00")); // p_max_price
+            stmt.registerOutParameter(5, Types.INTEGER);  // p_bouquet_id
+
+            stmt.execute();
+
+            // Obținem ID-ul buchetului generat
+            int bouquetId = stmt.getInt(5);
+
+            if (!stmt.wasNull()) {
+                // Preluăm florile generate și completăm câmpurile
+                try (PreparedStatement selectStmt = conn.prepareStatement(
+                        "SELECT bf.flower_id, bf.quantity FROM bouquet_flowers bf WHERE bf.bouquet_id = ?")) {
+
+                    selectStmt.setInt(1, bouquetId);
+                    ResultSet rs = selectStmt.executeQuery();
+
+                    while (rs.next()) {
+                        int flowerId = rs.getInt("flower_id");
+                        int quantity = rs.getInt("quantity");
+
+                        // Completăm câmpul corespunzător
+                        JTextField field = quantityFields.get(flowerId);
+                        if (field != null) {
+                            field.setText(String.valueOf(quantity));
+                            field.setBackground(new Color(255, 255, 200));
+                        }
+                    }
+
+                    // Afișăm preview-ul buchetului
+                    showBouquetPreview(bouquetId);
+                }
+
+                // Ștergem buchetul temporar
+                try (PreparedStatement deleteStmt = conn.prepareStatement(
+                        "DELETE FROM bouquet_flowers WHERE bouquet_id = ?")) {
+                    deleteStmt.setInt(1, bouquetId);
+                    deleteStmt.executeUpdate();
+                }
+
+                try (PreparedStatement deleteStmt = conn.prepareStatement(
+                        "DELETE FROM bouquets WHERE id = ?")) {
+                    deleteStmt.setInt(1, bouquetId);
+                    deleteStmt.executeUpdate();
+                }
+
+            } else {
+                JOptionPane.showMessageDialog(this,
+                        "Nu s-a putut genera buchetul. Verificați stocul disponibil.");
+            }
+
+        } catch (SQLException ex) {
             ex.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Eroare la trimiterea comenzii.");
+            JOptionPane.showMessageDialog(this,
+                    "Eroare la generarea buchetului random: " + ex.getMessage());
+        }
+    }
+
+    private void showBouquetPreview(int bouquetId) {
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement stmt = conn.prepareStatement("""
+            SELECT f.name, bf.quantity, f.price
+            FROM bouquet_flowers bf
+            JOIN flowers f ON bf.flower_id = f.id
+            WHERE bf.bouquet_id = ?
+            """)) {
+
+            stmt.setInt(1, bouquetId);
+            ResultSet rs = stmt.executeQuery();
+
+            StringBuilder message = new StringBuilder();
+            message.append("Buchet generat cu succes!\n\n");
+            double totalPrice = 0;
+
+            while (rs.next()) {
+                String flowerName = rs.getString("name");
+                int quantity = rs.getInt("quantity");
+                double price = rs.getDouble("price");
+                double subtotal = price * quantity;
+                totalPrice += subtotal;
+
+                message.append(String.format("%s x%d (%.2f RON)\n",
+                        flowerName, quantity, subtotal));
+            }
+
+            message.append("\nPreț total: ").append(String.format("%.2f RON", totalPrice));
+            message.append("\n\nCantitățile au fost completate automat.");
+            message.append("\nPentru a finaliza comanda, apăsați butonul 'Comandă buchet'");
+
+            JOptionPane.showMessageDialog(this, message.toString(),
+                    "Buchet Random", JOptionPane.INFORMATION_MESSAGE);
+
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                    "Eroare la afișarea detaliilor buchetului.");
+        }
+    }
+
+    private void placeOrder() {
+        Map<Integer, Integer> selectedFlowers = new HashMap<>();
+        for (Map.Entry<Integer, JTextField> entry : quantityFields.entrySet()) {
+            int flowerId = entry.getKey();
+            try {
+                int quantity = Integer.parseInt(entry.getValue().getText().trim());
+                if (quantity > 0) {
+                    selectedFlowers.put(flowerId, quantity);
+                }
+            } catch (NumberFormatException e) {
+            }
+        }
+
+        if (selectedFlowers.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "Vă rugăm să selectați cel puțin o floare!");
+            return;
+        }
+
+        try (Connection conn = DBConnection.getConnection()) {
+            String checkStock = "SELECT id, stock FROM flowers WHERE id = ?";
+            PreparedStatement stmt = conn.prepareStatement(checkStock);
+
+            for (Map.Entry<Integer, Integer> entry : selectedFlowers.entrySet()) {
+                stmt.setInt(1, entry.getKey());
+                ResultSet rs = stmt.executeQuery();
+
+                if (rs.next()) {
+                    int availableStock = rs.getInt("stock");
+                    if (entry.getValue() > availableStock) {
+                        JOptionPane.showMessageDialog(this,
+                                "Stoc insuficient pentru una din florile selectate!\n" +
+                                        "Stoc disponibil: " + availableStock);
+                        return;
+                    }
+                }
+            }
+            DetailsView deliveryView = new DetailsView(userId, selectedFlowers);
+            deliveryView.setVisible(true);
+
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                    "Eroare la verificarea stocului: " + ex.getMessage());
         }
     }
 
